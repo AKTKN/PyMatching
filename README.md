@@ -1,3 +1,5 @@
+## (Proceeding) Integration for calculating soft-output for color code.
+
 ## Added feature: Calculating Soft Outputs for each decoding shot
 The soft-output method in [arXiv:2405.07433](https://arxiv.org/abs/2405.07433) by Meister et al. serves a similar purpose as the complementary gap method in 
 [arXiv:2312.04522](https://arxiv.org/abs/2312.04522) but is more versatile since the soft-output mothod does not have a hard requirement on the boundary condition of the surface codes or decoding 
