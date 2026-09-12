@@ -84,6 +84,20 @@ pm::MERGE_STRATEGY merge_strategy_from_string(const std::string &merge_strategy)
 }
 
 void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGraph> &g) {
+    m.def("metric_from_radii", [](const std::vector<int64_t>& node_map,
+        const std::vector<std::tuple<size_t,size_t,size_t,double>>& edges,
+        const std::vector<std::pair<size_t,size_t>>& pairs,
+        const std::vector<double>& radii) {
+        pm::MetricGraph graph;
+        graph.node_map = node_map;
+        graph.terminal_pairs = pairs;
+        size_t n = 0;
+        for (auto u : node_map) if (u >= 0) n = std::max(n, (size_t)u + 1);
+        for (auto [id,u,v,w] : edges) graph.edges.push_back({id,u,v,w});
+        graph.validate(n);
+        return graph.evaluate(radii);
+    });
+
     g.def(py::init<>());
     g.def(py::init<size_t>(), "num_nodes"_a);
     g.def(py::init<size_t, size_t>(), "num_nodes"_a, "num_fault_ids"_a);
@@ -157,6 +171,56 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
     g.def("get_num_edges", &pm::UserGraph::get_num_edges);
     g.def("get_num_detectors", &pm::UserGraph::get_num_detectors);
     g.def("all_edges_have_error_probabilities", &pm::UserGraph::all_edges_have_error_probabilities);
+    g.def("configure_soft_output", [](pm::UserGraph &self,
+        const std::vector<int64_t>& node_map,
+        const std::vector<std::tuple<size_t, size_t, size_t, double>>& edges,
+        const std::vector<std::pair<size_t, size_t>>& pairs) {
+        pm::MetricGraph graph;
+        graph.node_map = node_map;
+        graph.terminal_pairs = pairs;
+        for (auto [id, u, v, w] : edges) graph.edges.push_back({id, u, v, w});
+        self.configure_soft_output(graph);
+    });
+
+    g.def("decode_batch_with_soft_output", [](pm::UserGraph &self,
+        const py::array_t<uint8_t>& shots, bool include_radii) {
+        self.require_soft_output();
+        if (shots.ndim() != 2 || shots.shape(1) < (py::ssize_t)self.get_num_detectors()
+            || shots.shape(1) > (py::ssize_t)self.get_num_nodes())
+            throw std::invalid_argument("Invalid shot shape for matching graph");
+        auto n = shots.shape(0);
+        auto k = (py::ssize_t)self.get_num_observables();
+        auto p = (py::ssize_t)self.metric_graph.terminal_pairs.size();
+        auto v = (py::ssize_t)self.metric_graph.node_map.size();
+        py::array_t<uint8_t> predictions({n, k});
+        py::array_t<double> weights(n), outputs({n, p});
+        py::array_t<double> radii({include_radii ? n : (py::ssize_t)0, v});
+        std::fill(predictions.mutable_data(), predictions.mutable_data() + predictions.size(), 0);
+        auto s = shots.unchecked<2>();
+        auto w = weights.mutable_unchecked<1>();
+        auto o = outputs.mutable_unchecked<2>();
+        auto r = radii.mutable_unchecked<2>();
+        auto &mwpm = self.get_mwpm();
+        std::vector<uint64_t> events;
+        std::vector<double> shot_outputs, shot_radii;
+        for (py::ssize_t i = 0; i < n; i++) {
+            events.clear();
+            for (py::ssize_t j = 0; j < s.shape(1); j++) {
+                if (s(i,j) > 1) throw std::invalid_argument("Shots must be binary");
+                if (s(i,j)) events.push_back(j);
+            }
+            pm::total_weight_int weight = 0;
+            pm::decode_detection_events_with_soft_output(mwpm, events,
+                predictions.mutable_data() + i*k, weight, self.metric_graph,
+                shot_outputs, shot_radii);
+            w(i) = weight / mwpm.flooder.graph.normalising_constant;
+            for (py::ssize_t j = 0; j < p; j++) o(i,j) = shot_outputs[j];
+            if (include_radii)
+                for (py::ssize_t j = 0; j < v; j++) r(i,j) = shot_radii[j];
+        }
+        return py::make_tuple(predictions, weights, outputs, radii);
+    }, "shots"_a, "include_radii"_a = false);
+
     g.def("SO_calculator_setup", [](pm::UserGraph &self){
         self.SO_calculator_setup();
     });
@@ -444,10 +508,10 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
                             detection_events.push_back(j);
                     }
                 }
-                pm::total_weight_int solution_weight = 0;
+                pm::total_weight_int solution_weight = 0, soft_output = 0;
                 if (bit_packed_predictions) {
                     std::fill(temp_predictions.begin(), temp_predictions.end(), 0);
-                    pm::decode_detection_events_soft_output(mwpm, detection_events, temp_predictions.data(), solution_weight,
+                    pm::decode_detection_events_soft_output(mwpm, detection_events, temp_predictions.data(), solution_weight, soft_output,
                                                             SO_calculator);
                     // bitpack the predictions
                     for (size_t k = 0; k < temp_predictions.size(); k++) {
@@ -456,10 +520,10 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
                     }
                 } else {
                     pm::decode_detection_events_soft_output(
-                        mwpm, detection_events, predictions_ptr + (num_observable_bytes * i), solution_weight,
+                        mwpm, detection_events, predictions_ptr + (num_observable_bytes * i), solution_weight, soft_output,
                         SO_calculator);
                 }
-                ws(i) = (double)solution_weight / mwpm.flooder.graph.normalising_constant;
+                ws(i) = (double)soft_output / mwpm.flooder.graph.normalising_constant;
                 detection_events.clear();
             }
             predictions.resize({(py::ssize_t)shots.shape(0), (py::ssize_t)num_observable_bytes});
@@ -533,12 +597,12 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
                                 detection_events.push_back(j);
                         }
                     }
-                    pm::total_weight_int solution_weight = 0;
+                    pm::total_weight_int solution_weight = 0, ordinary_weight = 0;
                     pm::total_weight_int solution_weight_mono = 0;
                     if (bit_packed_predictions) {
                         std::fill(temp_predictions.begin(), temp_predictions.end(), 0);
                         pm::decode_detection_events_soft_output_2d(mwpm, detection_events, temp_predictions.data(), solution_weight_mono,
-                                                                    solution_weight, SO_calculator);
+                                                                    solution_weight, ordinary_weight, SO_calculator);
                         // bitpack the predictions
                         for (size_t k = 0; k < temp_predictions.size(); k++) {
                             size_t arr_idx = k >> 3;
@@ -546,7 +610,7 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
                         }
                     } else {
                         pm::decode_detection_events_soft_output_2d(mwpm, detection_events, predictions_ptr + (num_observable_bytes * i),
-                                solution_weight_mono, solution_weight, SO_calculator);
+                                solution_weight_mono, solution_weight, ordinary_weight, SO_calculator);
                     }
                     ws(i) = (double)solution_weight / mwpm.flooder.graph.normalising_constant;
                     ws_mono(i) = (double)solution_weight_mono / mwpm.flooder.graph.normalising_constant;

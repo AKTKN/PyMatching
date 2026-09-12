@@ -63,6 +63,7 @@ set(SOURCE_FILES_NO_MAIN
         )
 
 set(TEST_FILES
+        src/pymatching/sparse_blossom/gap_dijkstra/metric_graph.test.cc
         src/pymatching/sparse_blossom/driver/namespaced_main.test.cc
         src/pymatching/sparse_blossom/driver/io.test.cc
         src/pymatching/sparse_blossom/driver/mwpm_decoding.test.cc

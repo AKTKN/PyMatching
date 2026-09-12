@@ -16,6 +16,7 @@
 #define PYMATCHING2_USER_GRAPH_H
 
 #include <cmath>
+#include "pymatching/sparse_blossom/gap_dijkstra/metric_graph.h"
 #include <list>
 #include <set>
 #include <vector>
@@ -111,6 +112,11 @@ class UserGraph {
     pm::SearchGraph to_search_graph(pm::weight_int num_distinct_weights);
     pm::Mwpm to_mwpm(pm::weight_int num_distinct_weights, bool ensure_search_graph_included);
     void update_mwpm();
+    MetricGraph metric_graph;
+    bool metric_graph_configured = false;
+    bool legacy_so_configured = false;
+    void configure_soft_output(const MetricGraph& graph);
+    void require_soft_output();
     void SO_calculator_setup(); // setting up all SO calculators.
     void add_boundary_node_SO(size_t boundary_index);
     void add_boundary_edge_SO(size_t inner_index, size_t boundary_index);
