@@ -18,6 +18,7 @@
 #include "pymatching/sparse_blossom/driver/io.h"
 #include "pymatching/sparse_blossom/matcher/mwpm.h"
 #include "stim.h"
+#include "pymatching/sparse_blossom/gap_dijkstra/metric_graph.h"
 #include "pymatching/sparse_blossom/gap_dijkstra/dijkstra_graph.h"
 
 namespace pm {
@@ -68,11 +69,18 @@ void decode_detection_events(
     pm::total_weight_int& weight);
 
 
+void decode_detection_events_with_soft_output(
+    pm::Mwpm& mwpm, const std::vector<uint64_t>& detection_events,
+    uint8_t* obs_begin_ptr, pm::total_weight_int& weight,
+    const MetricGraph& graph, std::vector<double>& outputs,
+    std::vector<double>& radii);
+
 void decode_detection_events_soft_output(
     pm::Mwpm& mwpm,
     const std::vector<uint64_t>& detection_events,
     uint8_t* obs_begin_ptr,
     pm::total_weight_int& weight,
+    pm::total_weight_int& soft_output,
     dijkstra::SoftOutputDijkstra& SO_calculator);
 
 void decode_detection_events_soft_output_2d(
@@ -81,6 +89,7 @@ void decode_detection_events_soft_output_2d(
     uint8_t* obs_begin_ptr,
     pm::total_weight_int& weight_mono,
     pm::total_weight_int& weight,
+    pm::total_weight_int& ordinary_weight,
     dijkstra::SoftOutputDijkstra& SO_calculator);
 
 

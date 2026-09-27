@@ -210,17 +210,35 @@ void pm::decode_detection_events(
 }
 
 
-void pm::decode_detection_events_soft_output(
+void pm::decode_detection_events_with_soft_output(
     pm::Mwpm& mwpm,
     const std::vector<uint64_t>& detection_events,
     uint8_t* obs_begin_ptr,
     pm::total_weight_int& weight,
-    dijkstra::SoftOutputDijkstra& SO_calculator) {
+    const MetricGraph& graph, std::vector<double>& outputs,
+    std::vector<double>& radii) {
     size_t num_observables = mwpm.flooder.graph.num_observables;
     process_timeline_until_completion(mwpm, detection_events);
-    // Here, all graph fill regions are frozon. (And blossom are still unshattered) 
-    // Calculate the soft output given the existing regions.
-    int64_t soft_output = SO_calculator.SoftOutput(mwpm);
+    // Read original defect-center radii before shattering any blossom. This
+    // convention defines metric balls; it is not an exported odd-cut certificate.
+    try {
+        std::vector<bool> defect(mwpm.flooder.graph.nodes.size(), false);
+        for (auto u : detection_events) defect[u] = true;
+        radii.assign(graph.node_map.size(), 0);
+        for (size_t u = 0; u < graph.node_map.size(); u++) {
+            auto v = graph.node_map[u];
+            if (v >= 0 && defect[v]) {
+                auto &node = mwpm.flooder.graph.nodes[v];
+                if (node.region_that_arrived_top != nullptr)
+                    radii[u] = (node.region_that_arrived_top->radius.y_intercept()
+                        + node.wrapped_radius_cached) / mwpm.flooder.graph.normalising_constant;
+            }
+        }
+        outputs = graph.evaluate(radii).first;
+    } catch (...) {
+        mwpm.reset();
+        throw;
+    }
 
     if (num_observables > sizeof(pm::obs_int) * 8) {
         mwpm.flooder.match_edges.clear();
@@ -249,21 +267,21 @@ void pm::decode_detection_events_soft_output(
         // Add negative weight sum to blossom solution weight
         weight = bit_packed_res.weight + mwpm.flooder.negative_weight_sum;
     }
-    weight = soft_output;
 }
 
-void pm::decode_detection_events_soft_output_2d(
+
+void pm::decode_detection_events_soft_output(
     pm::Mwpm& mwpm,
     const std::vector<uint64_t>& detection_events,
     uint8_t* obs_begin_ptr,
-    pm::total_weight_int& weight_mono,
     pm::total_weight_int& weight,
+    pm::total_weight_int& soft_output,
     dijkstra::SoftOutputDijkstra& SO_calculator) {
     size_t num_observables = mwpm.flooder.graph.num_observables;
     process_timeline_until_completion(mwpm, detection_events);
     // Here, all graph fill regions are frozon. (And blossom are still unshattered) 
     // Calculate the soft output given the existing regions.
-    std::pair<int64_t,int64_t> soft_outputs = SO_calculator.SoftOutput_2d(mwpm);
+    soft_output = SO_calculator.SoftOutput(mwpm);
 
     if (num_observables > sizeof(pm::obs_int) * 8) {
         mwpm.flooder.match_edges.clear();
@@ -291,6 +309,49 @@ void pm::decode_detection_events_soft_output_2d(
         fill_bit_vector_from_obs_mask(bit_packed_res.obs_mask, obs_begin_ptr, num_observables);
         // Add negative weight sum to blossom solution weight
         weight = bit_packed_res.weight + mwpm.flooder.negative_weight_sum;
+    }
+}
+
+void pm::decode_detection_events_soft_output_2d(
+    pm::Mwpm& mwpm,
+    const std::vector<uint64_t>& detection_events,
+    uint8_t* obs_begin_ptr,
+    pm::total_weight_int& weight_mono,
+    pm::total_weight_int& weight,
+    pm::total_weight_int& ordinary_weight,
+    dijkstra::SoftOutputDijkstra& SO_calculator) {
+    size_t num_observables = mwpm.flooder.graph.num_observables;
+    process_timeline_until_completion(mwpm, detection_events);
+    // Here, all graph fill regions are frozon. (And blossom are still unshattered) 
+    // Calculate the soft output given the existing regions.
+    std::pair<int64_t,int64_t> soft_outputs = SO_calculator.SoftOutput_2d(mwpm);
+
+    if (num_observables > sizeof(pm::obs_int) * 8) {
+        mwpm.flooder.match_edges.clear();
+        shatter_blossoms_for_all_detection_events_and_extract_match_edges(mwpm, detection_events);
+        if (!mwpm.flooder.negative_weight_detection_events.empty())
+            shatter_blossoms_for_all_detection_events_and_extract_match_edges(
+                mwpm, mwpm.flooder.negative_weight_detection_events);
+        mwpm.extract_paths_from_match_edges(mwpm.flooder.match_edges, obs_begin_ptr, ordinary_weight);
+
+        // XOR negative weight observables
+        for (auto& obs : mwpm.flooder.negative_weight_observables)
+            *(obs_begin_ptr + obs) ^= 1;
+        // Add negative weight sum to blossom solution weight
+        ordinary_weight += mwpm.flooder.negative_weight_sum;
+
+    } else {
+        pm::MatchingResult bit_packed_res =
+            shatter_blossoms_for_all_detection_events_and_extract_obs_mask_and_weight(mwpm, detection_events);
+        if (!mwpm.flooder.negative_weight_detection_events.empty())
+            bit_packed_res += shatter_blossoms_for_all_detection_events_and_extract_obs_mask_and_weight(
+                mwpm, mwpm.flooder.negative_weight_detection_events);
+        // XOR in negative weight observable mask
+        bit_packed_res.obs_mask ^= mwpm.flooder.negative_weight_obs_mask;
+        // Translate observable mask into bit vector
+        fill_bit_vector_from_obs_mask(bit_packed_res.obs_mask, obs_begin_ptr, num_observables);
+        // Add negative weight sum to blossom solution weight
+        ordinary_weight = bit_packed_res.weight + mwpm.flooder.negative_weight_sum;
     }
     weight_mono = soft_outputs.first;
     weight = soft_outputs.second;

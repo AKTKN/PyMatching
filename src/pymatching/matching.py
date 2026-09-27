@@ -166,7 +166,36 @@ class Matching:
         self.load_from_check_matrix(graph, weights, error_probabilities,
                                     repetitions, timelike_weights, measurement_error_probabilities,
                                     **kwargs)
-        self._matching_graph.SO_calculator_setup()
+
+    def configure_soft_output(self, config):
+        """Configure an explicit labelled analysis graph, independently of hard decoding.
+
+        Call again after any matching-graph mutation. Negative matching weights
+        are unsupported. Analysis vertex mappings and physical interpretations
+        are supplied by the caller; PyMatching supplies no logical certificate.
+        """
+        from pymatching.soft_output import SoftOutputConfig
+        if not isinstance(config, SoftOutputConfig):
+            raise TypeError("config must be a SoftOutputConfig")
+        self._matching_graph.configure_soft_output(config.node_map, config.edges, config.terminal_pairs)
+
+    def decode_batch_with_soft_output(self, shots, *, include_radii=False):
+        """Return predictions, ordinary solution weights, and one value per pair.
+
+        This opt-in API uses final original-defect radii, sums wrapped blossom
+        radii, and propagates their metric balls on the configured analysis
+        graph. It does not certify the nonnegative optimal odd-cut convention.
+        Inputs and predictions are unpacked arrays. ``include_radii`` is a
+        validation interface; missing growth information is never replaced
+        by a separately chosen zero-radius assumption.
+        """
+        from pymatching.soft_output import SoftOutputResult
+        shots = np.asarray(shots)
+        if shots.ndim != 2 or not np.all((shots == 0) | (shots == 1)):
+            raise ValueError("shots must be a two-dimensional binary array")
+        pred, weights, soft, radii = self._matching_graph.decode_batch_with_soft_output(
+            np.asarray(shots, dtype=np.uint8), include_radii)
+        return SoftOutputResult(pred, weights, soft, radii if include_radii else None)
 
     def SO_calculator_setup(self) -> None:
         """
@@ -475,6 +504,9 @@ class Matching:
             bit_packed_shots: bool = False,
             bit_packed_predictions: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
+        Legacy prototype API: ``return_weights`` returns SO, not MWPM weights.
+        Prefer ``decode_batch_with_soft_output`` for separately named products.
+
         Decode from a 2D `shots` array containing a batch of syndrome measurements. 
         A soft output is computed for each decoding shot.
 
