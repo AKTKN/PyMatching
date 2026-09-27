@@ -40,3 +40,24 @@ def metric_from_radii(config: SoftOutputConfig, radii):
     """
     from pymatching._cpp_pymatching import metric_from_radii as native
     return native(config.node_map, config.edges, config.terminal_pairs, radii)
+
+
+PATH_GAP_VERSION = "global_subtraction_v1"
+
+
+@dataclass(frozen=True)
+class PathGapResult:
+    """Signed heuristic with full original-weight correction subtraction.
+
+    predictions and solution_weights are ordinary decoder products.
+    correction_weights sums original floating weights on the returned XOR
+    edge support (not the backend's quantized solution weight).
+    residual_distances and path_gaps have shape (shots, terminal_pairs).
+    No radius, clipping, absolute value or overlap-only subtraction is used.
+    """
+    predictions: np.ndarray
+    solution_weights: np.ndarray
+    correction_weights: np.ndarray
+    residual_distances: np.ndarray
+    path_gaps: np.ndarray
+    metric_version: str = PATH_GAP_VERSION

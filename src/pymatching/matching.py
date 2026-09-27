@@ -197,6 +197,30 @@ class Matching:
             np.asarray(shots, dtype=np.uint8), include_radii)
         return SoftOutputResult(pred, weights, soft, radii if include_radii else None)
 
+    def decode_batch_with_path_gap(self, shots):
+        """Return ordinary decoding and global-subtraction path-gap v1.
+
+        First call ``configure_soft_output`` with the original graph's terminal
+        topology. Each analysis edge ID must be its index in ``self.edges()``;
+        its weight and mapped endpoints must match that ordinary edge. An
+        analysis-only endpoint (-1) resolves an implicit boundary. Omitted
+        edges still contribute to the full correction weight when selected.
+        Explicit matching boundary nodes and negative weights are unsupported.
+
+        The correction is the XOR support from ``decode_to_edges_array`` with
+        its ordinary tie convention. Dijkstra uses zero on correction edges
+        and original weights elsewhere. Return D(E)-W(E), retaining negatives.
+        This is a heuristic, not a SWIM certificate, logical gap, or LLR.
+        Inputs are unpacked binary (shots, num_detectors) arrays. No input or
+        hard-graph weight is changed. Reconfigure after any graph mutation.
+        """
+        from pymatching.soft_output import PathGapResult
+        shots = np.asarray(shots)
+        if shots.ndim != 2 or not np.all((shots == 0) | (shots == 1)):
+            raise ValueError("shots must be a two-dimensional binary array")
+        return PathGapResult(*self._matching_graph.decode_batch_with_path_gap(
+            np.asarray(shots, dtype=np.uint8)))
+
     def SO_calculator_setup(self) -> None:
         """
         

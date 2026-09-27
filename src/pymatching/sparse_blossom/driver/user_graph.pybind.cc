@@ -17,6 +17,7 @@
 #include "pybind11/pybind11.h"
 #include "pymatching/sparse_blossom/driver/mwpm_decoding.h"
 #include "stim.h"
+#include <map>
 
 using namespace py::literals;
 
@@ -220,6 +221,102 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
         }
         return py::make_tuple(predictions, weights, outputs, radii);
     }, "shots"_a, "include_radii"_a = false);
+
+    // Global-subtraction path-gap v1. Uses the actual XOR correction support;
+    // original matching weights and all ordinary decoder state remain unchanged.
+    g.def("decode_batch_with_path_gap", [](pm::UserGraph &self,
+        const py::array_t<uint8_t>& shots) {
+        self.require_soft_output();
+        if (!self.boundary_nodes.empty())
+            throw std::invalid_argument("Path gap currently requires implicit boundaries");
+        if (shots.ndim() != 2 || shots.shape(1) != (py::ssize_t)self.get_num_detectors())
+            throw std::invalid_argument("Invalid shot shape for matching graph");
+        using Key = std::pair<int64_t, int64_t>;
+        auto key = [](int64_t u, int64_t v) -> Key {return std::minmax(u, v);};
+        std::vector<const pm::UserEdge*> hard;
+        std::map<Key, size_t> ids;
+        for (const auto &e : self.edges) {
+            ids.emplace(key(e.node1, e.node2 == SIZE_MAX ? -1 : (int64_t)e.node2), hard.size());
+            hard.push_back(&e);
+        }
+        // Config edge IDs must refer to Matching.edges() enumeration. Validate
+        // weights and incidence, so arbitrary SWIM graphs cannot silently pass.
+        for (const auto &e : self.metric_graph.edges) {
+            if (e.id >= hard.size())
+                throw std::invalid_argument("Path-gap edge ID is not an ordinary edge index");
+            auto h = hard[e.id];
+            auto u = self.metric_graph.node_map[e.u];
+            auto v = self.metric_graph.node_map[e.v];
+            if (key(u, v) != key(h->node1, h->node2 == SIZE_MAX ? -1 : (int64_t)h->node2)
+                || e.weight != h->weight)
+                throw std::invalid_argument("Path-gap topology must retain original edge incidence and weights");
+        }
+        auto n = shots.shape(0);
+        auto k = (py::ssize_t)self.get_num_observables();
+        auto p = (py::ssize_t)self.metric_graph.terminal_pairs.size();
+        py::array_t<uint8_t> predictions({n, k});
+        py::array_t<double> weights(n), correction_weights(n), residuals({n, p}), gaps({n, p});
+        std::fill(predictions.mutable_data(), predictions.mutable_data()+predictions.size(), 0);
+        auto s = shots.unchecked<2>();
+        auto &mwpm = self.get_mwpm_with_search_graph();
+        std::vector<uint64_t> events;
+        std::vector<int64_t> correction;
+        for (py::ssize_t i = 0; i < n; i++) {
+            events.clear();
+            for (py::ssize_t j = 0; j < s.shape(1); j++) {
+                if (s(i,j) > 1) throw std::invalid_argument("Shots must be binary");
+                if (s(i,j)) events.push_back(j);
+            }
+            pm::total_weight_int weight = 0;
+            pm::decode_detection_events(mwpm, events, predictions.mutable_data()+i*k, weight);
+            weights.mutable_at(i) = weight / mwpm.flooder.graph.normalising_constant;
+            correction.clear();
+            pm::decode_detection_events_to_edges(mwpm, events, correction);
+            std::vector<bool> selected(hard.size(), false);
+            std::vector<uint8_t> obs(k, 0), syndrome(self.get_num_detectors(), 0);
+            for (size_t j = 0; j < correction.size(); j += 2)
+                selected.at(ids.at(key(correction[j], correction[j+1]))) = true;
+            double cost = 0;
+            for (size_t j = 0; j < hard.size(); j++) if (selected[j]) {
+                const auto &e = *hard[j];
+                cost += e.weight;
+                syndrome[e.node1] ^= 1;
+                if (e.node2 != SIZE_MAX) syndrome[e.node2] ^= 1;
+                for (auto b : e.observable_indices) obs[b] ^= 1;
+            }
+            for (py::ssize_t b = 0; b < k; b++)
+                if (obs[b] != predictions.at(i,b))
+                    throw std::invalid_argument("Correction and ordinary prediction disagree");
+            for (size_t j = 0; j < syndrome.size(); j++)
+                if (syndrome[j] != s(i,j))
+                    throw std::invalid_argument("Correction and input syndrome disagree");
+            correction_weights.mutable_at(i) = cost;
+            // Dijkstra on the uncontracted graph, with correction edges zeroed.
+            std::vector<std::vector<std::pair<size_t, double>>> adj(self.metric_graph.node_map.size());
+            for (const auto &e : self.metric_graph.edges) {
+                double w = selected[e.id] ? 0.0 : e.weight;
+                adj[e.u].push_back({e.v,w}); adj[e.v].push_back({e.u,w});
+            }
+            for (py::ssize_t j = 0; j < p; j++) {
+                auto [source,target] = self.metric_graph.terminal_pairs[j];
+                std::vector<double> dist(adj.size(), std::numeric_limits<double>::infinity());
+                using Entry = std::pair<double,size_t>;
+                std::priority_queue<Entry,std::vector<Entry>,std::greater<Entry>> queue;
+                dist[source] = 0; queue.push({0,source});
+                while (!queue.empty()) {
+                    auto [d,u] = queue.top(); queue.pop();
+                    if (d != dist[u]) continue;
+                    if (u == target) break;
+                    for (auto [v,w] : adj[u]) if (d+w < dist[v]) {
+                        dist[v] = d+w; queue.push({dist[v],v});
+                    }
+                }
+                residuals.mutable_at(i,j) = dist[target];
+                gaps.mutable_at(i,j) = dist[target]-cost;
+            }
+        }
+        return py::make_tuple(predictions, weights, correction_weights, residuals, gaps);
+    }, "shots"_a);
 
     g.def("SO_calculator_setup", [](pm::UserGraph &self){
         self.SO_calculator_setup();
