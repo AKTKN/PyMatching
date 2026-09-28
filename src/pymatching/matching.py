@@ -37,6 +37,8 @@ class Matching:
     a `stim.DetectorErrorModel`.
     """
 
+    NATIVE_PERTURBATION_VERSION = getattr(_cpp_pm, "NATIVE_PERTURBATION_VERSION", 0)
+
     def __init__(self,
                  graph: Union[csc_matrix, np.ndarray, "rx.PyGraph", nx.Graph, List[
                      List[int]], 'stim.DetectorErrorModel', spmatrix] = None,
@@ -45,6 +47,7 @@ class Matching:
                  repetitions: int = None,
                  timelike_weights: Union[float, np.ndarray, List[float]] = None,
                  measurement_error_probabilities: Union[float, np.ndarray, List[float]] = None,
+                 *, apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0,
                  **kwargs
                  ):
         r"""Constructor for the Matching class
@@ -84,8 +87,9 @@ class Matching:
             to a column of the check matrix. If a
             single float is given, the same error probability is used for each
             edge. If a numpy.ndarray of floats is given, it must have a
-            length equal to the number of columns in the check matrix. This parameter is only
-            needed for the Matching.add_noise method, and not for decoding.
+            length equal to the number of columns in the check matrix. In ordinary mode this is only
+            needed for Matching.add_noise. With apply_perturbation=True, it supplies
+            original priors for decoding and must agree with the log-odds weights.
             By default None
         repetitions : int, optional
             The number of times the stabiliser measurements are repeated, if
@@ -129,21 +133,35 @@ class Matching:
         >>> m = pymatching.Matching([[1, 1, 0, 0], [0, 1, 1, 0], [0, 0, 1, 1]])
         >>> m
         <pymatching.Matching object with 3 detectors, 1 boundary node, and 4 edges>
+
+        Native perturbation is opt-in: pass apply_perturbation=True, alpha, seed,
+        ensemble_size (including baseline member 0) and stream_id. In this mode
+        error_probabilities supplies original priors and weights must be their
+        nonnegative log odds. See docs/native_perturbation.md for support limits.
         """
+        self._apply_perturbation = False
+        if type(apply_perturbation) is not bool:
+            raise ValueError("apply_perturbation must be boolean")
         self._matching_graph = _cpp_pm.MatchingGraph()
         if graph is None:
             graph = kwargs.get("H")
             if graph is None:
+                if apply_perturbation:
+                    raise ValueError("apply_perturbation requires a check matrix")
                 return
             del kwargs["H"]
         # Networkx graph
         if isinstance(graph, nx.Graph):
+            if apply_perturbation:
+                raise NotImplementedError("apply_perturbation requires a check matrix")
             self.load_from_networkx(graph)
             return
         # Rustworkx PyGraph
         try:
             import rustworkx as rx
             if isinstance(graph, rx.PyGraph):
+                if apply_perturbation:
+                    raise NotImplementedError("apply_perturbation requires a check matrix")
                 self.load_from_rustworkx(graph)
                 return
         except ImportError:  # pragma no cover
@@ -152,6 +170,8 @@ class Matching:
         try:
             import stim
             if isinstance(graph, stim.DetectorErrorModel):
+                if apply_perturbation:
+                    raise NotImplementedError("apply_perturbation requires a check matrix")
                 self._load_from_detector_error_model(graph)
                 return
         except ImportError:  # pragma no cover
@@ -165,7 +185,38 @@ class Matching:
                             "stim.DetectorErrorModel.")
         self.load_from_check_matrix(graph, weights, error_probabilities,
                                     repetitions, timelike_weights, measurement_error_probabilities,
-                                    **kwargs)
+                                    apply_perturbation=apply_perturbation, alpha=alpha, seed=seed,
+                                    ensemble_size=ensemble_size, stream_id=stream_id, **kwargs)
+
+    @property
+    def apply_perturbation(self):
+        """Whether decode/decode_batch return an ensemble instead of one correction."""
+        return getattr(self, "_apply_perturbation", False)
+
+    @staticmethod
+    def _uint64(value, name):
+        if type(value) is not int or not 0 <= value < 2**64:
+            raise ValueError(f"{name} must be an integer in [0, 2**64)")
+        return value
+
+    def _require_standard_matching(self):
+        if self.apply_perturbation:
+            raise NotImplementedError("This operation is unsupported when apply_perturbation=True")
+
+    def get_perturbation_state(self):
+        """Return the resolved configuration, RNG scheme version and next shot position."""
+        return dict(self._matching_graph.get_perturbation_state())
+
+    def set_perturbation_state(self, state):
+        """Restore a shot position after checking that the configured random stream matches."""
+        current = self.get_perturbation_state()
+        if set(current) != set(state) or any(current[k] != state[k] for k in current if k != "shot_position"):
+            raise ValueError("Perturbation configuration or RNG scheme version differs")
+        self._matching_graph.set_perturbation_position(self._uint64(state["shot_position"], "shot_position"))
+
+    def _perturbation_weights_for_shot(self, shot):
+        """Validation-only: sample member weights without advancing the stream."""
+        return self._matching_graph.perturbation_weights_for_shot(self._uint64(shot, "shot"))
 
     def configure_soft_output(self, config):
         """Configure an explicit labelled analysis graph, independently of hard decoding.
@@ -174,6 +225,7 @@ class Matching:
         are unsupported. Analysis vertex mappings and physical interpretations
         are supplied by the caller; PyMatching supplies no logical certificate.
         """
+        self._require_standard_matching()
         from pymatching.soft_output import SoftOutputConfig
         if not isinstance(config, SoftOutputConfig):
             raise TypeError("config must be a SoftOutputConfig")
@@ -189,6 +241,7 @@ class Matching:
         validation interface; missing growth information is never replaced
         by a separately chosen zero-radius assumption.
         """
+        self._require_standard_matching()
         from pymatching.soft_output import SoftOutputResult
         shots = np.asarray(shots)
         if shots.ndim != 2 or not np.all((shots == 0) | (shots == 1)):
@@ -214,6 +267,7 @@ class Matching:
         Inputs are unpacked binary (shots, num_detectors) arrays. No input or
         hard-graph weight is changed. Reconfigure after any graph mutation.
         """
+        self._require_standard_matching()
         from pymatching.soft_output import PathGapResult
         shots = np.asarray(shots)
         if shots.ndim != 2 or not np.all((shots == 0) | (shots == 1)):
@@ -225,40 +279,50 @@ class Matching:
         """
         
         """
+        self._require_standard_matching()
         self._matching_graph.SO_calculator_setup()
     
     def add_boundary_node_SO(self, boundary_index: np.uint32) -> None:
         """
         
         """
+        self._require_standard_matching()
         self._matching_graph.add_boundary_node_SO(boundary_index)
 
     def add_boundary_edge_SO(self, inner_index: np.uint32, boundary_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.add_boundary_edge_SO(inner_index, boundary_index)
     
     def add_cycle_endpoints_pair_SO(self, start_index: np.uint32, end_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.add_cycle_endpoints_pair_SO(start_index, end_index)
     
     def add_cycle_endpoints_pair_mono_SO(self, start_index: np.uint32, end_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.add_cycle_endpoints_pair_mono_SO(start_index, end_index)
 
     def add_image_node_SO(self, original_index: np.uint32, image_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.add_image_node(original_index, image_index)
     
     def redirect_edge_to_image(self, original_index: np.uint32, image_index: np.uint32,
                                target_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.redirect_edge_to_image(original_index, image_index, target_index)
     
     def add_boundary_edge_to_image(self, original_index: np.uint32, image_index: np.uint32,
                                    boundary_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.add_boundary_edge_to_image(original_index, image_index, boundary_index)
     
     def copy_edge_to_image(self, original_s_index: np.uint32, original_t_index: np.uint32,
                            image_s_index: np.uint32, image_t_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.copy_edge_to_image(original_s_index,original_t_index,
                                                 image_s_index,image_t_index)
     
     def dijkstra_shortest_distance_path_debug(self, source_index: np.uint32, target_index: np.uint32) -> None:
+        self._require_standard_matching()
         self._matching_graph.dijkstra_shortest_distance_path_debug(source_index, target_index)
 
     def add_noise(self) -> Union[Tuple[np.ndarray, np.ndarray], None]:
@@ -277,6 +341,7 @@ class Matching:
             self.num_detectors if there is no boundary, or self.num_detectors+len(self.boundary)
             if there are boundary nodes)
         """
+        self._require_standard_matching()
         if not self._matching_graph.all_edges_have_error_probabilities():
             return None
         return self._matching_graph.add_noise()
@@ -303,6 +368,7 @@ class Matching:
                _legacy_return_weight: bool = None,
                *,
                return_weight: bool = False,
+               shot_offset=None,
                **kwargs
                ) -> Union[np.ndarray, Tuple[np.ndarray, int]]:
         r"""
@@ -402,6 +468,9 @@ class Matching:
         >>> syndrome[:,1:] = syndrome[:,:-1] ^ syndrome[:,1:]
         >>> m.decode(syndrome)
         array([0, 0, 1, 0], dtype=uint8)
+
+        With apply_perturbation=True, returns M correction vectors and optionally
+        M matching weights. shot_offset optionally specifies an absolute shot ID.
         """
 
         if _legacy_num_neighbours is not None:
@@ -414,6 +483,13 @@ class Matching:
                           "version of PyMatching, it will be required to provide ``return_weights`` as a keyword "
                           "argument.", DeprecationWarning, stacklevel=2)
             return_weight = _legacy_return_weight
+        if self.apply_perturbation:
+            z = np.asarray(z)
+            if z.ndim != 1:
+                raise ValueError("Native perturbation decode requires a one-dimensional syndrome")
+            return self.decode_batch(z[None, :], return_weights=return_weight, shot_offset=shot_offset)
+        if shot_offset is not None:
+            raise ValueError("shot_offset requires apply_perturbation=True")
         detection_events = self._syndrome_array_to_detection_events(z)
         correction, weight = self._matching_graph.decode(detection_events)
         if return_weight:
@@ -427,7 +503,8 @@ class Matching:
             *,
             return_weights: bool = False,
             bit_packed_shots: bool = False,
-            bit_packed_predictions: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+            bit_packed_predictions: bool = False,
+            shot_offset=None) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
         Decode from a 2D `shots` array containing a batch of syndrome measurements. A faster
         alternative to using `pymatching.Matching.decode` and iterating over the shots in Python.
@@ -509,7 +586,26 @@ class Matching:
         >>> predicted_observables.shape
         (10000, 1)
         >>> num_errors = np.sum(np.any(predicted_observables != actual_observables, axis=1))
+
+        With apply_perturbation=True, output rows are shot*M+member: corrections
+        have shape (num_shots*M, num_fault_ids) and weights shape (num_shots*M,).
+        shot_offset=None advances the owned cursor; an explicit absolute offset
+        reproduces those draws independently of chunking. Empty batches do not
+        advance it. Packed decoding is unsupported in this opt-in mode.
         """
+        if self.apply_perturbation:
+            if bit_packed_shots or bit_packed_predictions:
+                raise NotImplementedError("Native perturbation requires unpacked shots and predictions")
+            shots = np.asarray(shots)
+            if shots.ndim != 2 or not np.all((shots == 0) | (shots == 1)):
+                raise ValueError("shots must be a two-dimensional binary array")
+            if shot_offset is not None:
+                shot_offset = self._uint64(shot_offset, "shot_offset")
+            predictions, weights = self._matching_graph.decode_batch_perturbed(
+                np.asarray(shots, dtype=np.uint8), shot_offset)
+            return (predictions, weights) if return_weights else predictions
+        if shot_offset is not None:
+            raise ValueError("shot_offset requires apply_perturbation=True")
         predictions, weights = self._matching_graph.decode_batch(
             shots,
             bit_packed_predictions=bit_packed_predictions,
@@ -575,6 +671,7 @@ class Matching:
         --------
         
         """
+        self._require_standard_matching()
         predictions, weights = self._matching_graph.decode_batch_soft_output(
             shots,
             bit_packed_predictions=bit_packed_predictions,
@@ -640,6 +737,7 @@ class Matching:
         
 
         """
+        self._require_standard_matching()
         predictions, weights_mono, weights = self._matching_graph.decode_batch_soft_output_2d(
             shots,
             bit_packed_predictions=bit_packed_predictions,
@@ -696,6 +794,7 @@ class Matching:
          [ 5  4]
          [ 5  6]]
         """
+        self._require_standard_matching()
         detection_events = self._syndrome_array_to_detection_events(syndrome)
         return self._matching_graph.decode_to_edges_array(detection_events)
 
@@ -747,6 +846,7 @@ class Matching:
         [[ 1 -1]
          [ 4  6]]
         """
+        self._require_standard_matching()
         detection_events = self._syndrome_array_to_detection_events(syndrome)
         return self._matching_graph.decode_to_matched_detection_events_array(detection_events)
 
@@ -793,6 +893,7 @@ class Matching:
         >>> d
         {0: None, 3: 4, 4: 3}
         """
+        self._require_standard_matching()
         detection_events = self._syndrome_array_to_detection_events(syndrome)
         return self._matching_graph.decode_to_matched_detection_events_dict(detection_events)
 
@@ -918,6 +1019,7 @@ class Matching:
         >>> m.edges()
         [(0, 1, {'fault_ids': {1}, 'weight': 1.0, 'error_probability': -1.0})]
         """
+        self._require_standard_matching()
         if fault_ids is not None and "qubit_id" in kwargs:
             raise ValueError("Both `fault_ids` and `qubit_id` were provided as arguments. Please "
                              "provide `fault_ids` instead of `qubit_id` as an argument, as use of `qubit_id` has "
@@ -1003,6 +1105,7 @@ class Matching:
         >>> m.boundary  # Using Matching.add_boundary_edge, no boundary nodes are added (the boundary is a virtual node)
         set()
         """
+        self._require_standard_matching()
         if isinstance(fault_ids, (int, np.integer)):
             fault_ids = set() if fault_ids == -1 else {int(fault_ids)}
         fault_ids = set() if fault_ids is None else fault_ids
@@ -1113,6 +1216,7 @@ class Matching:
             faults_matrix: Union[csc_matrix, spmatrix, np.ndarray, List[List[int]]] = None,
             merge_strategy: str = "smallest-weight",
             use_virtual_boundary_node: bool = False,
+            apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0,
             **kwargs
     ) -> 'pymatching.Matching':
         r"""
@@ -1138,8 +1242,9 @@ class Matching:
             column of check_matrix. If a
             single float is given, the same error probability is used for each
             column. If a numpy.ndarray of floats is given, it must have a
-            length equal to the number of columns in check_matrix. This parameter is only
-            needed for the Matching.add_noise method, and not for decoding.
+            length equal to the number of columns in check_matrix. In ordinary mode this is only
+            needed for Matching.add_noise. With apply_perturbation=True, it supplies
+            original priors for decoding and must agree with the log-odds weights.
             By default None
         repetitions : int, optional
             The number of times the stabiliser measurements are repeated, if
@@ -1211,6 +1316,10 @@ class Matching:
         >>> m
         <pymatching.Matching object with 2 detectors, 1 boundary node, and 3 edges>
 
+
+        Native perturbation options: apply_perturbation=False, alpha=0.0,
+        seed=None, ensemble_size=1, stream_id=0. True requires original
+        error_probabilities and consistent finite nonnegative log-odds weights.
         """
         m = pymatching.Matching()
         m.load_from_check_matrix(
@@ -1223,6 +1332,8 @@ class Matching:
             faults_matrix=faults_matrix,
             merge_strategy=merge_strategy,
             use_virtual_boundary_node=use_virtual_boundary_node,
+            apply_perturbation=apply_perturbation, alpha=alpha, seed=seed,
+            ensemble_size=ensemble_size, stream_id=stream_id,
             **kwargs
         )
         return m
@@ -1238,6 +1349,7 @@ class Matching:
                                faults_matrix: Union[csc_matrix, spmatrix, np.ndarray, List[List[int]]] = None,
                                merge_strategy: str = "smallest-weight",
                                use_virtual_boundary_node: bool = False,
+                               apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0,
                                **kwargs
                                ) -> None:
         """
@@ -1263,8 +1375,9 @@ class Matching:
             column of check_matrix. If a
             single float is given, the same error probability is used for each
             column. If a numpy.ndarray of floats is given, it must have a
-            length equal to the number of columns in check_matrix. This parameter is only
-            needed for the Matching.add_noise method, and not for decoding.
+            length equal to the number of columns in check_matrix. In ordinary mode this is only
+            needed for Matching.add_noise. With apply_perturbation=True, it supplies
+            original priors for decoding and must agree with the log-odds weights.
             By default None
         repetitions : int, optional
             The number of times the stabiliser measurements are repeated, if
@@ -1335,7 +1448,12 @@ class Matching:
         >>> m.load_from_check_matrix(check_matrix)
         >>> m
         <pymatching.Matching object with 2 detectors, 1 boundary node, and 3 edges>
+
+        Native perturbation options: apply_perturbation=False, alpha=0.0,
+        seed=None, ensemble_size=1, stream_id=0. True requires a simple
+        fixed check-matrix graph; mutation after setup is unsupported.
         """
+        self._require_standard_matching()
         if check_matrix is None:
             check_matrix = kwargs.get("H", None)
             if check_matrix is None:
@@ -1405,6 +1523,31 @@ class Matching:
         else:
             timelike_weights = None
             p_meas = None
+        if type(apply_perturbation) is not bool:
+            raise ValueError("apply_perturbation must be boolean")
+        if apply_perturbation:
+            if not self.NATIVE_PERTURBATION_VERSION:
+                raise RuntimeError("Build the native perturbation PyMatching backend first")
+            if repetitions != 1:
+                raise NotImplementedError("Native perturbation requires repetitions=1")
+            if type(ensemble_size) is not int or ensemble_size < 1:
+                raise ValueError("ensemble_size must be a positive integer")
+            if isinstance(alpha, (bool, np.bool_)) or not np.isfinite(alpha) or not 0 <= alpha <= 1:
+                raise ValueError("alpha must be finite and in [0, 1]")
+            if seed is None:
+                import secrets
+                seed = secrets.randbits(64)
+            seed = self._uint64(seed, "seed")
+            stream_id = self._uint64(stream_id, "stream_id")
+            columns = set()
+            for column in range(num_edges):
+                rows = tuple(sorted(check_matrix.indices[check_matrix.indptr[column]:check_matrix.indptr[column+1]]))
+                if not 1 <= len(rows) <= 2 or len(set(rows)) != len(rows):
+                    raise ValueError("Native perturbation requires one or two distinct checks per column")
+                if rows in columns:
+                    raise ValueError("Native perturbation does not support parallel edges")
+                columns.add(rows)
+            merge_strategy = "disallow"
         self._matching_graph = _cpp_pm.sparse_column_check_matrix_to_matching_graph(check_matrix, weights,
                                                                                     error_probabilities,
                                                                                     merge_strategy,
@@ -1412,6 +1555,10 @@ class Matching:
                                                                                     repetitions,
                                                                                     timelike_weights, p_meas,
                                                                                     faults_matrix)
+        if apply_perturbation:
+            self._matching_graph.configure_perturbation(float(alpha), seed, ensemble_size, stream_id)
+        self._apply_perturbation = apply_perturbation
+
 
     @staticmethod
     def from_detector_error_model(model: 'stim.DetectorErrorModel') -> 'pymatching.Matching':
@@ -1553,6 +1700,7 @@ class Matching:
         return m
 
     def _load_from_detector_error_model(self, model: 'stim.DetectorErrorModel') -> None:
+        self._require_standard_matching()
         try:
             import stim
         except ImportError:  # pragma no cover
@@ -1664,6 +1812,7 @@ class Matching:
         >>> m
         <pymatching.Matching object with 1 detector, 2 boundary nodes, and 2 edges>
         """
+        self._require_standard_matching()
 
         if not isinstance(graph, nx.Graph):
             raise TypeError("G must be a NetworkX graph")
@@ -1707,6 +1856,7 @@ class Matching:
         Load a matching graph from a retworkX graph. This method is deprecated since the retworkx package has been
         renamed to rustworkx. Please use ``pymatching.Matching.load_from_rustworkx`` instead.
         """
+        self._require_standard_matching()
         warnings.warn("`pymatching.Matching.load_from_retworkx` is now deprecated since the `retworkx` library has been "
                       "renamed to `rustworkx`. Please use `pymatching.Matching.load_from_rustworkx` instead.", DeprecationWarning, stacklevel=2)
         self.load_from_rustworkx(graph=graph, min_num_fault_ids=min_num_fault_ids)
@@ -1753,6 +1903,7 @@ class Matching:
         >>> m
         <pymatching.Matching object with 1 detector, 2 boundary nodes, and 2 edges>
         """
+        self._require_standard_matching()
         try:
             import rustworkx as rx
         except ImportError:  # pragma no cover
@@ -1888,6 +2039,7 @@ class Matching:
         >>> m
         <pymatching.Matching object with 1 detector, 2 boundary nodes, and 2 edges>
         """
+        self._require_standard_matching()
         self._matching_graph.set_boundary(nodes)
 
     def ensure_num_fault_ids(self, min_num_fault_ids: int) -> None:
@@ -1904,6 +2056,7 @@ class Matching:
             The required minimum number of fault ids in the matching graph
 
         """
+        self._require_standard_matching()
         self._matching_graph.set_min_num_observables(min_num_fault_ids)
 
     @property

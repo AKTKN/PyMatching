@@ -18,6 +18,7 @@
 #include "pymatching/sparse_blossom/driver/mwpm_decoding.h"
 #include "stim.h"
 #include <map>
+#include <limits>
 
 using namespace py::literals;
 
@@ -458,6 +459,73 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
             return match_edges;
         },
         "detection_events"_a);
+    g.def("configure_perturbation", &pm::UserGraph::configure_perturbation,
+          "alpha"_a, "seed"_a, "ensemble_size"_a, "stream_id"_a);
+    g.def_property_readonly("native_mwpm_build_count", [](pm::UserGraph& graph) { return graph.mwpm_build_count; });
+    g.def("get_perturbation_state", [](pm::UserGraph& graph) {
+        if (!graph.perturbation) throw std::invalid_argument("Perturbation is not configured");
+        const auto& p = *graph.perturbation;
+        py::dict state;
+        state["scheme_version"] = p.VERSION;
+        state["seed"] = p.seed;
+        state["stream_id"] = p.stream_id;
+        state["ensemble_size"] = p.size;
+        state["alpha"] = p.alpha;
+        state["shot_position"] = p.shot_position;
+        return state;
+    });
+    g.def("set_perturbation_position", [](pm::UserGraph& graph, uint64_t position) {
+        if (!graph.perturbation) throw std::invalid_argument("Perturbation is not configured");
+        graph.perturbation->shot_position = position;
+    });
+    // Validation/reference interface. It neither advances the cursor nor touches solver weights.
+    g.def("perturbation_weights_for_shot", [](pm::UserGraph& graph, uint64_t shot) {
+        if (!graph.perturbation) throw std::invalid_argument("Perturbation is not configured");
+        const auto& p = *graph.perturbation;
+        py::array_t<double> values({static_cast<py::ssize_t>(p.size), static_cast<py::ssize_t>(p.base_weights.size())});
+        auto out = values.mutable_unchecked<2>();
+        std::mt19937_64 rng(p.shot_seed(shot));
+        std::vector<double> weights(p.base_weights.size());
+        for (size_t member = 0; member < p.size; member++) {
+            if (member == 0 || p.alpha == 0) weights = p.base_weights;
+            else p.sample_weights(rng, weights);
+            for (size_t edge = 0; edge < weights.size(); edge++) out(member, edge) = weights[edge];
+        }
+        return values;
+    }, "shot"_a);
+    g.def("decode_batch_perturbed", [](pm::UserGraph& graph, const py::array_t<uint8_t>& shots, py::object offset) {
+        if (!graph.perturbation) throw std::invalid_argument("Perturbation is not configured");
+        if (shots.ndim() != 2 || shots.shape(1) < graph.get_num_detectors() || shots.shape(1) > graph.get_num_nodes())
+            throw std::invalid_argument("shots must be a two-dimensional unpacked syndrome array of matching width");
+        auto& p = *graph.perturbation;
+        uint64_t start = offset.is_none() ? p.shot_position : offset.cast<uint64_t>();
+        auto count = static_cast<size_t>(shots.shape(0));
+        if (count > UINT64_MAX - start) throw std::invalid_argument("shot_offset overflows uint64");
+        size_t max_size = static_cast<size_t>(std::numeric_limits<py::ssize_t>::max());
+        if (p.size > max_size || count > max_size / p.size)
+            throw std::invalid_argument("ensemble output is too large");
+        size_t rows = count * p.size, width = graph.get_num_observables();
+        if (width && rows > max_size / width) throw std::invalid_argument("ensemble output is too large");
+        auto input = shots.unchecked<2>();
+        for (py::ssize_t i = 0; i < input.shape(0); i++)
+            for (py::ssize_t j = 0; j < input.shape(1); j++)
+                if (input(i, j) > 1) throw std::invalid_argument("shots must be binary");
+        py::array_t<uint8_t> predictions({static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(width)});
+        predictions[py::make_tuple(py::ellipsis())] = 0;
+        py::array_t<double> weights(static_cast<py::ssize_t>(rows));
+        auto pred = predictions.mutable_data();
+        auto ws = weights.mutable_data();
+        std::vector<uint64_t> detections;
+        detections.reserve(input.shape(1));
+        for (size_t shot = 0; shot < count; shot++) {
+            detections.clear();
+            for (py::ssize_t j = 0; j < input.shape(1); j++)
+                if (input(shot, j)) detections.push_back(j);
+            p.decode(graph, detections, start + shot, pred + shot * p.size * width, ws + shot * p.size);
+        }
+        if (count) p.shot_position = std::max(p.shot_position, start + count);
+        return py::make_tuple(predictions, weights);
+    }, "shots"_a, "shot_offset"_a = py::none());
     g.def(
         "decode_batch",
         [](pm::UserGraph &self, const py::array_t<uint8_t> &shots, bool bit_packed_shots, bool bit_packed_predictions) {

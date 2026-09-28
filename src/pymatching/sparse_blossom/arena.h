@@ -57,6 +57,17 @@ struct Arena {
         p->~T();
     }
 
+    // Destroy live objects while retaining the allocated blocks. Explicitly
+    // invoking ~Arena() leaves a dead arena and cannot support another decode.
+    void reset() {
+        if (available.size() != allocated.size()) {
+            for (auto p : allocated)
+                if (std::find(available.begin(), available.end(), p) == available.end())
+                    p->~T();
+        }
+        available = allocated;
+    }
+
     ~Arena() {
         std::vector<T *> to_free = std::move(allocated);
         std::vector<T *> not_in_use = std::move(available);

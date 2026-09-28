@@ -58,6 +58,7 @@ set(SOURCE_FILES_NO_MAIN
         src/pymatching/sparse_blossom/search/search_detector_node.cc
         src/pymatching/sparse_blossom/search/search_flooder.cc
         src/pymatching/sparse_blossom/driver/user_graph.cc
+        src/pymatching/sparse_blossom/driver/perturbation.cc
         src/pymatching/rand/rand_gen.cc
         src/pymatching/sparse_blossom/gap_dijkstra/dijkstra_graph.cc
         )
@@ -85,6 +86,7 @@ set(TEST_FILES
         src/pymatching/sparse_blossom/search/search_graph.test.cc
         src/pymatching/sparse_blossom/search/search_flooder.test.cc
         src/pymatching/sparse_blossom/driver/user_graph.test.cc
+        src/pymatching/sparse_blossom/driver/perturbation.test.cc
         )
 
 set(PERF_FILES

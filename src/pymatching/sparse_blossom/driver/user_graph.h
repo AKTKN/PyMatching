@@ -18,11 +18,13 @@
 #include <cmath>
 #include "pymatching/sparse_blossom/gap_dijkstra/metric_graph.h"
 #include <list>
+#include <memory>
 #include <set>
 #include <vector>
 
 #include "pymatching/rand/rand_gen.h"
 #include "pymatching/sparse_blossom/driver/io.h"
+#include "pymatching/sparse_blossom/driver/perturbation.h"
 #include "pymatching/sparse_blossom/ints.h"
 #include "pymatching/sparse_blossom/gap_dijkstra/dijkstra_graph.h"
 
@@ -60,6 +62,10 @@ class UserGraph {
     std::set<size_t> boundary_nodes;
     dijkstra::SoftOutputDijkstra SO_calculator;
     std::vector<dijkstra::SoftOutputDijkstra> SO_calculators;
+    std::unique_ptr<PerturbationEnsemble> perturbation;
+    size_t mwpm_build_count = 0;
+    void require_no_perturbation() const;
+    void configure_perturbation(double alpha, uint64_t seed, size_t size, uint64_t stream_id);
 
     UserGraph();
     explicit UserGraph(size_t num_nodes);
