@@ -12,6 +12,7 @@ class UserGraph;
 struct PerturbationEnsemble {
     static constexpr uint64_t VERSION = 1;
     double alpha;
+    bool clip_probabilities;
     uint64_t seed, stream_id, shot_position = 0;
     size_t size;
     Mwpm work;
@@ -19,7 +20,7 @@ struct PerturbationEnsemble {
     std::vector<std::vector<weight_int*>> weight_slots;
     std::mt19937_64 rng;
 
-    PerturbationEnsemble(UserGraph& graph, double alpha, uint64_t seed, size_t size, uint64_t stream_id);
+    PerturbationEnsemble(UserGraph& graph, double alpha, uint64_t seed, size_t size, uint64_t stream_id, bool clip_probabilities = false);
     static uint64_t splitmix64(uint64_t value);
     uint64_t shot_seed(uint64_t shot) const;
     void sample_weights(std::mt19937_64& generator, std::vector<double>& output) const;

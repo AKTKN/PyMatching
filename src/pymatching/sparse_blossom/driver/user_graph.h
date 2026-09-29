@@ -65,7 +65,7 @@ class UserGraph {
     std::unique_ptr<PerturbationEnsemble> perturbation;
     size_t mwpm_build_count = 0;
     void require_no_perturbation() const;
-    void configure_perturbation(double alpha, uint64_t seed, size_t size, uint64_t stream_id);
+    void configure_perturbation(double alpha, uint64_t seed, size_t size, uint64_t stream_id, bool clip_probabilities = false);
 
     UserGraph();
     explicit UserGraph(size_t num_nodes);

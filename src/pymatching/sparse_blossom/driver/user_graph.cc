@@ -460,9 +460,9 @@ void pm::UserGraph::require_no_perturbation() const {
         throw std::invalid_argument("This operation is unsupported when apply_perturbation=True");
 }
 
-void pm::UserGraph::configure_perturbation(double alpha, uint64_t seed, size_t size, uint64_t stream_id) {
+void pm::UserGraph::configure_perturbation(double alpha, uint64_t seed, size_t size, uint64_t stream_id, bool clip_probabilities) {
     require_no_perturbation();
-    perturbation = std::make_unique<PerturbationEnsemble>(*this, alpha, seed, size, stream_id);
+    perturbation = std::make_unique<PerturbationEnsemble>(*this, alpha, seed, size, stream_id, clip_probabilities);
 }
 
 pm::UserGraph pm::detector_error_model_to_user_graph(const stim::DetectorErrorModel& detector_error_model) {

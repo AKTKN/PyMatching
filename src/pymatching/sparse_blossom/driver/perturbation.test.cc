@@ -87,3 +87,24 @@ TEST(Perturbation, OriginalSolverAndUnsupportedInputs) {
     ASSERT_EQ(weights, (std::vector<double>{0, 0, 0}));
     ASSERT_THROW(graph.add_or_merge_boundary_edge(1, {1}, 1, 0.1), std::invalid_argument);
 }
+
+TEST(Perturbation, ClippedProbabilityCapRetainsOriginalSolverAndZeroWeights) {
+    pm::UserGraph graph;
+    graph.add_or_merge_boundary_edge(0, {0}, 0, 0.5);
+    graph.configure_perturbation(1, 19, 20, 0, true);
+    std::mt19937_64 rng(graph.perturbation->shot_seed(0));
+    std::vector<double> sampled(1);
+    bool found_zero = false;
+    for (size_t i = 0; i < 19; i++) {
+        graph.perturbation->sample_weights(rng, sampled);
+        ASSERT_GE(sampled[0], 0);
+        found_zero |= sampled[0] == 0;
+    }
+    ASSERT_TRUE(found_zero);
+    std::vector<uint8_t> output(20);
+    std::vector<double> weights(20);
+    graph.perturbation->decode(graph, {0}, 0, output.data(), weights.data());
+    ASSERT_EQ(output[0], 1);
+    ASSERT_EQ(weights[0], 0);
+    for (auto w : weights) ASSERT_GE(w, 0);
+}

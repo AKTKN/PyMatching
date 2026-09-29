@@ -66,6 +66,16 @@ must satisfy `p*(1+alpha) <= 0.5`. Unsupported inputs raise errors; they do not
 silently fall back or clip a negative weight to zero. Ordinary mode retains
 its existing support for these features.
 
+An explicit `clip_perturbed_probabilities=True` option caps sampled priors at
+0.5 instead of `1-1e-14`, and therefore permits `p*(1+alpha)>0.5`. It requires
+`apply_perturbation=True`; all other topology and base-prior checks still
+apply. The log odds are computed from the capped probabilities, so p'=0.5
+gives weight zero. This mode uses scheme version 2, with identical RNG draws
+and unchanged member 0. Its state cannot be restored into scheme version 1.
+The default remains False with the rejection rule above. Global BP color-code
+fallback uses this explicit option; no global negative-weight clipping was
+added to ordinary PyMatching.
+
 Validation includes independent Python MT19937-64 draws, fresh graph
 construction for every candidate, explicit/virtual boundaries, more than 64
 fault IDs, zero weights, failed-syndrome recovery and stable graph storage.

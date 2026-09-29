@@ -460,13 +460,13 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
         },
         "detection_events"_a);
     g.def("configure_perturbation", &pm::UserGraph::configure_perturbation,
-          "alpha"_a, "seed"_a, "ensemble_size"_a, "stream_id"_a);
+          "alpha"_a, "seed"_a, "ensemble_size"_a, "stream_id"_a, "clip_probabilities"_a = false);
     g.def_property_readonly("native_mwpm_build_count", [](pm::UserGraph& graph) { return graph.mwpm_build_count; });
     g.def("get_perturbation_state", [](pm::UserGraph& graph) {
         if (!graph.perturbation) throw std::invalid_argument("Perturbation is not configured");
         const auto& p = *graph.perturbation;
         py::dict state;
-        state["scheme_version"] = p.VERSION;
+        state["scheme_version"] = p.clip_probabilities ? 2 : p.VERSION;
         state["seed"] = p.seed;
         state["stream_id"] = p.stream_id;
         state["ensemble_size"] = p.size;

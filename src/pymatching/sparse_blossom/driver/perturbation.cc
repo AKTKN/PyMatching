@@ -17,8 +17,8 @@ uint64_t pm::PerturbationEnsemble::shot_seed(uint64_t shot) const {
 }
 
 pm::PerturbationEnsemble::PerturbationEnsemble(
-        UserGraph& graph, double alpha, uint64_t seed, size_t size, uint64_t stream_id)
-    : alpha(alpha), seed(seed), stream_id(stream_id), size(size) {
+        UserGraph& graph, double alpha, uint64_t seed, size_t size, uint64_t stream_id, bool clip_probabilities)
+    : alpha(alpha), clip_probabilities(clip_probabilities), seed(seed), stream_id(stream_id), size(size) {
     if (!std::isfinite(alpha) || alpha < 0 || alpha > 1 || size == 0)
         throw std::invalid_argument("alpha must be in [0, 1] and ensemble_size must be positive");
     std::set<std::pair<size_t, size_t>> seen;
@@ -29,7 +29,7 @@ pm::PerturbationEnsemble::PerturbationEnsemble(
         auto expected = std::log((1 - p) / p);
         if (std::abs(edge.weight - expected) > 1e-12 * std::max(1.0, std::abs(expected)))
             throw std::invalid_argument("Perturbation weights must equal log((1-p)/p)");
-        if (size > 1 && alpha > 0 && p * (1 + alpha) > 0.5)
+        if (!clip_probabilities && size > 1 && alpha > 0 && p * (1 + alpha) > 0.5)
             throw std::invalid_argument("Perturbation could produce negative weights: p*(1+alpha) exceeds 0.5");
         size_t u = edge.node1, v = edge.node2;
         if (graph.is_boundary_node(u)) std::swap(u, v);
@@ -69,7 +69,7 @@ pm::PerturbationEnsemble::PerturbationEnsemble(
 void pm::PerturbationEnsemble::sample_weights(std::mt19937_64& generator, std::vector<double>& output) const {
     for (size_t edge = 0; edge < probabilities.size(); edge++) {
         double uniform = static_cast<double>(generator() >> 11) * 0x1.0p-53;
-        double p = std::clamp(probabilities[edge] * (1 + alpha * (2 * uniform - 1)), 1e-14, 1 - 1e-14);
+        double p = std::clamp(probabilities[edge] * (1 + alpha * (2 * uniform - 1)), 1e-14, clip_probabilities ? 0.5 : 1 - 1e-14);
         output[edge] = std::log((1 - p) / p);
     }
 }

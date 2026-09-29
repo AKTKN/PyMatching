@@ -47,7 +47,7 @@ class Matching:
                  repetitions: int = None,
                  timelike_weights: Union[float, np.ndarray, List[float]] = None,
                  measurement_error_probabilities: Union[float, np.ndarray, List[float]] = None,
-                 *, apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0,
+                 *, apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0, clip_perturbed_probabilities=False,
                  **kwargs
                  ):
         r"""Constructor for the Matching class
@@ -140,6 +140,10 @@ class Matching:
         nonnegative log odds. See docs/native_perturbation.md for support limits.
         """
         self._apply_perturbation = False
+        if type(clip_perturbed_probabilities) is not bool:
+            raise ValueError("clip_perturbed_probabilities must be boolean")
+        if clip_perturbed_probabilities and not apply_perturbation:
+            raise ValueError("clipping requires apply_perturbation=True")
         if type(apply_perturbation) is not bool:
             raise ValueError("apply_perturbation must be boolean")
         self._matching_graph = _cpp_pm.MatchingGraph()
@@ -186,7 +190,7 @@ class Matching:
         self.load_from_check_matrix(graph, weights, error_probabilities,
                                     repetitions, timelike_weights, measurement_error_probabilities,
                                     apply_perturbation=apply_perturbation, alpha=alpha, seed=seed,
-                                    ensemble_size=ensemble_size, stream_id=stream_id, **kwargs)
+                                    ensemble_size=ensemble_size, stream_id=stream_id, clip_perturbed_probabilities=clip_perturbed_probabilities, **kwargs)
 
     @property
     def apply_perturbation(self):
@@ -1216,7 +1220,7 @@ class Matching:
             faults_matrix: Union[csc_matrix, spmatrix, np.ndarray, List[List[int]]] = None,
             merge_strategy: str = "smallest-weight",
             use_virtual_boundary_node: bool = False,
-            apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0,
+            apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0, clip_perturbed_probabilities=False,
             **kwargs
     ) -> 'pymatching.Matching':
         r"""
@@ -1333,7 +1337,7 @@ class Matching:
             merge_strategy=merge_strategy,
             use_virtual_boundary_node=use_virtual_boundary_node,
             apply_perturbation=apply_perturbation, alpha=alpha, seed=seed,
-            ensemble_size=ensemble_size, stream_id=stream_id,
+            ensemble_size=ensemble_size, stream_id=stream_id, clip_perturbed_probabilities=clip_perturbed_probabilities,
             **kwargs
         )
         return m
@@ -1349,7 +1353,7 @@ class Matching:
                                faults_matrix: Union[csc_matrix, spmatrix, np.ndarray, List[List[int]]] = None,
                                merge_strategy: str = "smallest-weight",
                                use_virtual_boundary_node: bool = False,
-                               apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0,
+                               apply_perturbation=False, alpha=0.0, seed=None, ensemble_size=1, stream_id=0, clip_perturbed_probabilities=False,
                                **kwargs
                                ) -> None:
         """
@@ -1523,6 +1527,10 @@ class Matching:
         else:
             timelike_weights = None
             p_meas = None
+        if type(clip_perturbed_probabilities) is not bool:
+            raise ValueError("clip_perturbed_probabilities must be boolean")
+        if clip_perturbed_probabilities and not apply_perturbation:
+            raise ValueError("clipping requires apply_perturbation=True")
         if type(apply_perturbation) is not bool:
             raise ValueError("apply_perturbation must be boolean")
         if apply_perturbation:
@@ -1556,7 +1564,7 @@ class Matching:
                                                                                     timelike_weights, p_meas,
                                                                                     faults_matrix)
         if apply_perturbation:
-            self._matching_graph.configure_perturbation(float(alpha), seed, ensemble_size, stream_id)
+            self._matching_graph.configure_perturbation(float(alpha), seed, ensemble_size, stream_id, clip_perturbed_probabilities)
         self._apply_perturbation = apply_perturbation
 
 
