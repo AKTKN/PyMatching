@@ -93,6 +93,7 @@ void pm::UserGraph::add_or_merge_edge(
     double weight,
     double error_probability,
     MERGE_STRATEGY merge_strategy) {
+    require_no_perturbation();
     auto max_id = std::max(node1, node2);
     if (max_id + 1 > nodes.size())
         nodes.resize(max_id + 1);
@@ -124,6 +125,7 @@ void pm::UserGraph::add_or_merge_boundary_edge(
     double weight,
     double error_probability,
     MERGE_STRATEGY merge_strategy) {
+    require_no_perturbation();
     if (node + 1 > nodes.size())
         nodes.resize(node + 1);
 
@@ -161,6 +163,7 @@ pm::UserGraph::UserGraph(size_t num_nodes, size_t num_observables)
 }
 
 void pm::UserGraph::set_boundary(const std::set<size_t>& boundary) {
+    require_no_perturbation();
     for (auto& n : boundary_nodes)
         nodes[n].is_boundary = false;
     boundary_nodes = boundary;
@@ -193,6 +196,7 @@ bool pm::UserGraph::is_boundary_node(size_t node_id) {
 }
 
 void pm::UserGraph::configure_soft_output(const MetricGraph& graph) {
+    require_no_perturbation();
     graph.validate(nodes.size());
     for (auto &e : edges)
         if (!std::isfinite(e.weight) || e.weight < 0)
@@ -215,6 +219,7 @@ void pm::UserGraph::update_mwpm() {
 }
 
 void pm::UserGraph::SO_calculator_setup() {
+    require_no_perturbation();
     update_mwpm();
     SO_calculator = dijkstra::SoftOutputDijkstra();
     SO_calculator.fl_matching_graph = SO_calculator.mwpm_to_dijkstra_graph(_mwpm);
@@ -350,6 +355,7 @@ pm::SearchGraph pm::UserGraph::to_search_graph(pm::weight_int num_distinct_weigh
 }
 
 pm::Mwpm pm::UserGraph::to_mwpm(pm::weight_int num_distinct_weights, bool ensure_search_graph_included) {
+    mwpm_build_count++;
     if (_num_observables > sizeof(pm::obs_int) * 8 || ensure_search_graph_included) {
         auto mwpm = pm::Mwpm(
             pm::GraphFlooder(to_matching_graph(num_distinct_weights)),
@@ -421,6 +427,7 @@ bool pm::UserGraph::has_boundary_edge(size_t node) {
 }
 
 void pm::UserGraph::set_min_num_observables(size_t num_observables) {
+    require_no_perturbation();
     if (num_observables > _num_observables)
         _num_observables = num_observables;
 }
@@ -446,6 +453,16 @@ double pm::UserGraph::get_edge_weight_normalising_constant(size_t max_num_distin
         pm::weight_int max_half_edge_weight = max_num_distinct_weights - 1;
         return (double)max_half_edge_weight / max_abs_weight;
     }
+}
+
+void pm::UserGraph::require_no_perturbation() const {
+    if (perturbation)
+        throw std::invalid_argument("This operation is unsupported when apply_perturbation=True");
+}
+
+void pm::UserGraph::configure_perturbation(double alpha, uint64_t seed, size_t size, uint64_t stream_id, bool clip_probabilities) {
+    require_no_perturbation();
+    perturbation = std::make_unique<PerturbationEnsemble>(*this, alpha, seed, size, stream_id, clip_probabilities);
 }
 
 pm::UserGraph pm::detector_error_model_to_user_graph(const stim::DetectorErrorModel& detector_error_model) {

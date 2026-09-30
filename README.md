@@ -10,6 +10,10 @@ example of how to obtain soft output when decoding SE circuits on rotated surfac
 
 # PyMatching 2
 
+This fork provides opt-in [native prior perturbation](docs/native_perturbation.md)
+for fixed, simple check-matrix graphs. The new mode returns a shot-major
+ensemble; default matching APIs retain their existing behavior.
+
 ![Continuous Integration](https://github.com/oscarhiggott/PyMatching/workflows/ci/badge.svg)
 [![codecov](https://codecov.io/gh/oscarhiggott/PyMatching/branch/master/graph/badge.svg)](https://codecov.io/gh/oscarhiggott/PyMatching)
 [![docs](https://readthedocs.org/projects/pymatching/badge/?version=latest&style=plastic)](https://readthedocs.org/projects/pymatching/builds/)

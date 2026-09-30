@@ -30,6 +30,7 @@ int pymatching_main(const std::vector<std::string> &args) {
 }
 
 PYBIND11_MODULE(_cpp_pymatching, m) {
+    m.attr("NATIVE_PERTURBATION_VERSION") = pm::PerturbationEnsemble::VERSION;
     auto matching_graph = pm_pybind::pybind_user_graph(m);
     pm_pybind::pybind_user_graph_methods(m, matching_graph);
     pm_pybind::pybind_rand_gen_methods(m);
